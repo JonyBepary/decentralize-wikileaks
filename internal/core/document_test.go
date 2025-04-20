@@ -6,8 +6,8 @@ import (
 	"time"
 
 	"github.com/ipfs/go-cid"
+	"github.com/jonybepary/decentralize-wikileaks/internal/crypto"
 	"github.com/multiformats/go-multihash"
-	"github.com/sohelahmedjony/decentralize-wikileaks/internal/crypto"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

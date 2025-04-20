@@ -8,7 +8,7 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/sohelahmedjony/decentralize-wikileaks/internal/p2p"
+	"github.com/jonybepary/decentralize-wikileaks/internal/p2p"
 )
 
 const defaultPort = 4001 // Default listening port

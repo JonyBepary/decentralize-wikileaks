@@ -15,11 +15,11 @@ To protect against individual operators attempting to survey the network or
 collect information about users, all wikileaks content are onion-routed
 through the network. Every encrypted datapacket is routed through three
 nodes in the wikileaks Network, making it virtually impossible for the nodes to
-compile meaningful information about the users of the network. 
+compile meaningful information about the users of the network.
 
 When a message is sent, one node will know the sender has sent a
 message—but not know its destination—and a different node will know the
-receiver has received a message—but not know its origin. 
+receiver has received a message—but not know its origin.
 
 By restricting the creation or collection of metadata or identifying information about its users, Wikileaks also gains censorship-resistant qualities.
 Because individual users in one-on-one and encrypted group chats cannot be identified, they cannot be personally targeted by censorship from third-parties unlike other centralize system contains open group chats intended for large
@@ -28,7 +28,7 @@ by the communities themselves, and moderation policies are determined by
 each individual community.
 Because of the design of unlike other centralize system, users can have extreme confidence that whenever they send a message that only the person they send
 it to will be able to know: the message contents; who they messaged; who
-messaged; when they sent the message. 
+messaged; when they sent the message.
 
 Where would you like to begin? We could:
 
@@ -38,20 +38,9 @@ Set up a minimal libp2p node to handle basic peer connections.
 Discuss the design for the custom onion routing layer.
 Explore options for the UI (perhaps a web-based UI using Go's net/http or a framework like Gin/Echo, or a desktop UI using Fyne/Wails).
 
-
 Start implementing the DHT for discovery?
 Begin defining the onion packet structure and relay logic?
 Set up a basic blockstore and integrate Bitswap?
-
-
-
-
-
-
-
-
-
-
 
 Our goal:
 
@@ -189,12 +178,6 @@ Placeholders: This implementation relies heavily on placeholders, especially for
 No Circuit Setup Yet: The logic for establishing circuits and exchanging keys (CircuitSetupProtocol) is not yet implemented.
 Basic Forwarding: The core idea of receiving, "decrypting" (placeholder), and forwarding is sketched out.
 
-
-
-
-
-
-
 Current Status: We've made significant progress in implementing and testing the core components, but a few key tests are still failing, indicating issues in network traversal simulation and concurrency handling.
 
 Key Successes & Completed Components:
@@ -240,14 +223,14 @@ Overall, the cryptographic core is strong, but the simulation of packet traversa
 
 ## Current Status Summary
 
-We're working on a decentralized WikiLeaks platform focusing on privacy, censorship resistance, and metadata protection. The core components we've been implementing revolve around onion routing for anonymous document publishing. 
+We're working on a decentralized WikiLeaks platform focusing on privacy, censorship resistance, and metadata protection. The core components we've been implementing revolve around onion routing for anonymous document publishing.
 
 Here's the current state of implementation and issues:
 
 ### Completed Components:
 1. **Cryptography (crypto.go)**
    - Key generation, Diffie-Hellman key exchange
-   - AES-GCM encryption/decryption 
+   - AES-GCM encryption/decryption
    - Onion layer creation
 
 2. **Packet Structures & Serialization (packet.go)**
@@ -271,7 +254,7 @@ We've been fixing several failing tests:
    - Need to revise the locking pattern in `cleanupStaleCircuits` function
 
 3. **TestOnionNetworkTraversal & TestCreateOnionLayers** - Failing with encryption/decryption errors
-   - `failed to decode HopInfo: gob: type mismatch` 
+   - `failed to decode HopInfo: gob: type mismatch`
    - `cipher: message authentication failed`
    - Issue with `CreateOnionLayers` function not correctly structuring the data layers
 
@@ -290,7 +273,7 @@ We've been fixing several failing tests:
    - Modify `TestCreateOnionLayers` and `TestOnionPacketCreationAndRouting` to correctly simulate the decryption and forwarding process
    - Ensure that intermediate relays correctly decode LayeredPayload and exit nodes correctly decode InnerPayload
 
-4. **Once Tests Pass**: 
+4. **Once Tests Pass**:
    - Continue with integrating the onion routing system with the document publishing mechanism
    - Implement circuit setup and key exchange protocol for establishing paths
    - Develop the node discovery mechanism for finding relay nodes
@@ -299,7 +282,7 @@ We've been fixing several failing tests:
 
 The core of our onion routing approach:
 
-1. **For publishing documents**: 
+1. **For publishing documents**:
    - Author selects 3 relay nodes (R1, R2, R3)
    - Creates layered encryption: Message for Exit → R3 → R2 → R1
    - Only exit node can see final destination but doesn't know original sender
@@ -319,7 +302,6 @@ The system consists of:
 
 After fixing the tests, we'll need to focus on implementing the document storage, retrieval, and publishing mechanisms that will leverage this secure communication layer.
 
-
 Okay, the analysis of CreateOnionLayers suggests the layering logic itself might be correct, but the handling in handleRelayStream doesn't match what CreateOnionLayers produces.
 
 Specifically:
@@ -331,30 +313,25 @@ Let's adjust handleRelayStream to correctly expect LayeredPayload for intermedia
 
 Step 1: Simplify DecodeLayeredPayload
 
-
 Cline wants to edit this file:
 
 Checkpoint
 Compare
 Restore
-
 
 Step 2: Modify handleRelayStream
 
 Now, let's update handleRelayStream in relay.go to correctly handle the LayeredPayload structure for intermediate hops and forward the inner payload directly.
 
-
 Cline wants to edit this file:
 
 Checkpoint
 Compare
 Restore
 
-
 Okay, the relay handler logic has been updated to align with the structure produced by CreateOnionLayers.
 
 Let's run the TestOnionNetworkTraversal test again to see if these changes resolved the issues.
-
 
 Cline wants to execute this command:
 go test ./internal/onion -run TestOnionNetworkTraversal -v
@@ -364,20 +341,16 @@ Checkpoint
 Compare
 Restore
 
-
 Excellent! Both TestOnionNetworkTraversalFixed and TestOnionNetworkTraversal are now passing, along with TestStaleCircuitCleanup which we fixed earlier.
 
 It appears the changes to handleRelayStream and DecodeLayeredPayload correctly addressed the type mismatch and decryption issues.
 
-
 Task Completed
 All previously failing tests (TestStaleCircuitCleanup, TestOnionNetworkTraversalFixed, TestOnionNetworkTraversal) in the internal/onion package are now passing. The mutex issue in circuit cleanup and the packet layering/decoding logic in the relay handler have been corrected.
-
 
 See new changes
 
 now focus on next task
-
 
 Alright, we've successfully fixed the failing tests related to onion packet relaying and circuit cleanup. The core relaying mechanism seems solid now.
 
@@ -410,3 +383,27 @@ Test error handling scenarios (e.g., relay failure).
 This will give us the ability to establish the secure, layered paths needed before we can send actual application data (like document publish requests) through them.
 
 Does this sound like the right next step? If so, you can switch me to ACT MODE, and we can start by defining the necessary functions and structures for the client-side circuit building.
+
+---
+**Update (2025-04-20): Circuit Builder Implementation & Testing**
+
+*   **Goal:** Implement and test the client-side logic for building multi-hop onion circuits (`BuildCircuit` function in `internal/onion/circuit_builder.go`).
+*   **Progress:**
+    *   Implemented the `BuildCircuit` function to perform the telescoping key exchange with multiple relays.
+    *   Created `TestBuildCircuit_MultiHop` in `internal/onion/circuit_builder_test.go` to simulate the circuit building process using mock relays.
+    *   Iteratively debugged and fixed several issues encountered during testing:
+        *   Initial EOF errors due to mock relays not sending responses.
+        *   Undefined type errors (`OnionMessage` -> `CircuitSetupMessage`).
+        *   Hangs resolved by sending dummy responses from mock relays.
+        *   "Invalid key size" errors due to incorrect dummy public keys in mock responses.
+        *   Teardown timeout errors due to race conditions between the main relay handler and a separate teardown handler. Integrated teardown confirmation into the main mock handler.
+*   **Status:** `TestBuildCircuit_MultiHop` and all other tests in the `internal/onion` package are now **passing**. The client-side circuit building logic is functional according to the tests.
+
+**Next Steps:**
+
+1.  **Implement Data Transmission:**
+    *   Add `ClientCircuit.SendData` method in `internal/onion/circuit_builder.go` to wrap data in onion layers using the established circuit keys and send it via the circuit's stream.
+    *   Enhance relay logic (`internal/onion/relay.go`) to handle incoming `RelayProtocol` data packets: decrypt one layer, forward to the next hop or deliver to the destination.
+    *   Write tests (`TestClientCircuit_SendData` in `circuit_builder_test.go`, potentially new tests in `relay_test.go`) to verify end-to-end data transmission and relay forwarding.
+2.  **Node Discovery:** Implement a mechanism for clients to discover available relay nodes (e.g., using DHT or a custom protocol).
+3.  **Document Publishing Integration:** Connect the onion routing layer to the document publishing mechanism (sending document metadata/CIDs through circuits).

@@ -136,28 +136,27 @@ func (r *Relay) handleRelayStream(s network.Stream) {
 			return
 		}
 
-		// Process the inner payload based on its type
-		// Use MessageType and FinalRecipient fields from packet.InnerPayload
-		r.logger.Infof("Circuit %s: Received InnerPayload: Type=%d, Recipient=%s, DataLen=%d",
-			onion.CircuitID, innerPayload.MessageType, innerPayload.FinalRecipient.ShortString(), len(innerPayload.Data))
+		// Process the inner payload
+		// For now, just log the data and intended recipient.
+		// Actual delivery requires opening a new stream using a different protocol.
+		r.logger.Infof("Circuit %s: Exit node received %d bytes for final recipient %s",
+			onion.CircuitID, len(innerPayload.Data), innerPayload.FinalRecipient.ShortString())
 
-		switch innerPayload.MessageType { // Use MessageType field
-		case MessageTypePublishDocument: // Use updated constant name
-			r.logger.Info("-> Exit Node: Handling Publish Document request (placeholder)")
-			// Placeholder: Store blocks, announce CID via DHT/PubSub, etc.
-		// Need to interact with other modules (core, p2p) here.
-		case MessageTypeRequestBlock: // Use updated constant name
-			r.logger.Info("-> Exit Node: Handling Block Request (placeholder)")
-		// Placeholder: Fetch block from storage, send back via reply circuit/direct connection?
-		case MessageTypeAnnouncement: // Use updated constant name
-			r.logger.Info("-> Exit Node: Handling Announcement (placeholder)")
-		// Placeholder: Process announcement (e.g., new content available)
-		case MessageTypeError: // Use updated constant name
-			r.logger.Warn("-> Exit Node: Received Error message in inner payload")
-		// Placeholder: Log or handle error reported by another node
-		default:
-			r.logger.Warnf("-> Exit Node: Received unknown inner payload type: %d", innerPayload.MessageType) // Use MessageType field
-		}
+		// TODO: Implement actual delivery to innerPayload.FinalRecipient
+		// Example:
+		// appDataStream, err := r.host.NewStream(r.ctx, innerPayload.FinalRecipient, AppDataProtocol) // Define AppDataProtocol
+		// if err != nil {
+		//  r.logger.Errorf("Circuit %s: Failed to open app data stream to %s: %v", onion.CircuitID, innerPayload.FinalRecipient.ShortString(), err)
+		// } else {
+		//  defer appDataStream.Close()
+		//  _, err = appDataStream.Write(innerPayload.Data)
+		//  if err != nil {
+		//      r.logger.Errorf("Circuit %s: Failed to write app data to %s: %v", onion.CircuitID, innerPayload.FinalRecipient.ShortString(), err)
+		//      appDataStream.Reset()
+		//  } else {
+		//      r.logger.Infof("Circuit %s: Delivered %d bytes to %s", onion.CircuitID, len(innerPayload.Data), innerPayload.FinalRecipient.ShortString())
+		//  }
+		// }
 		// Exit node processing ends here for this packet.
 
 	} else {
@@ -189,11 +188,15 @@ func (r *Relay) handleRelayStream(s network.Stream) {
 			return
 		}
 
-		// Prepare the onion packet for the next hop (same CircuitID, inner encrypted payload)
-		// Assuming OnionPacket has CircuitID and EncryptedPayload fields - needs fix in packet.go if not
-		// Assuming LayeredPayload has Payload ([]byte) field - needs fix in packet.go if not
+		// Prepare the onion packet for the next hop
+		// Include HopInfo so the next relay knows where to forward *after* decryption
 		forwardOnion := OnionPacket{
-			CircuitID:        onion.CircuitID,
+			CircuitID: onion.CircuitID,
+			HopInfo: HopInfo{
+				// This is the hop *after* the nextStream's peer (e.g., R3 if nextStream goes to R2)
+				// The LayeredPayload contained the ID of the node *after* the current next hop.
+				NextPeer: layeredPayload.NextHop,
+			},
 			EncryptedPayload: layeredPayload.Payload, // Forward the already encrypted inner payload
 		}
 

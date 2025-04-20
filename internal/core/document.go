@@ -4,7 +4,7 @@ import (
 	"time"
 
 	"github.com/ipfs/go-cid"
-	"github.com/sohelahmedjony/decentralize-wikileaks/internal/crypto"
+	"github.com/jonybepary/decentralize-wikileaks/internal/crypto"
 
 	// IPLD libraries for encoding/decoding and linking
 	"bytes"
