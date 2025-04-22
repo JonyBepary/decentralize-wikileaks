@@ -1,0 +1,6 @@
+=== RUN   TestKuboIPFSInteractor_AddData
+    kubo_interactor_test.go:33: Placeholder: KuboIPFSInteractor not yet implemented.
+    kubo_interactor_test.go:39: Skipping AddData test as KuboIPFSInteractor implementation is pending.
+--- SKIP: TestKuboIPFSInteractor_AddData (0.00s)
+PASS
+ok  	github.com/jonybepary/decentralize-wikileaks/internal/ipfs	0.002s
