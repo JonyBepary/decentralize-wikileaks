@@ -13,6 +13,7 @@ import (
 
 	// Added for testing swarm
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // TestCircuitCreationAndLookup tests the basic circuit tracking functionality
@@ -116,14 +117,18 @@ func TestCircuitTeardown(t *testing.T) {
 // TestStaleCircuitCleanup tests the automatic circuit cleanup
 func TestStaleCircuitCleanup(t *testing.T) {
 	// Use NewRelay for proper initialization, including logger
-	ctx := context.Background()
+	// Create a cancellable context for the relay
+	ctx, cancelRelay := context.WithCancel(context.Background())
 	dummyHost := blankhost.NewBlankHost(swarmt.GenSwarm(t))
 	relay := NewRelay(ctx, dummyHost)
 
-	// Ensure circuits map is initialized if NewRelay doesn't do it (it should)
-	if relay.circuits == nil {
-		relay.circuits = make(map[string]*Circuit)
-	}
+	// --- Cancel the background loop started by NewRelay to avoid interference ---
+	cancelRelay()
+	time.Sleep(10 * time.Millisecond) // Give goroutine time to exit
+	// --------------------------------------------------------------------------
+
+	// Ensure circuits map is initialized (NewRelay should handle this)
+	require.NotNil(t, relay.circuits, "Relay circuits map should be initialized")
 
 	// Create test circuits - one recent, one stale
 	recentCircuitID := "recent-circuit-123" // Changed type to string
@@ -131,8 +136,9 @@ func TestStaleCircuitCleanup(t *testing.T) {
 	testKey := []byte("test-circuit-key-12345")
 	idleTimeout := 10 * time.Millisecond // Define timeout for clarity
 
-	// Add circuits with different activity times - Direct map manipulation (unsafe)
-	// relay.circuitsMu.Lock() // Cannot access
+	// Add circuits with different activity times - Direct map manipulation (unsafe, but necessary for test setup without add methods)
+	// We need the write lock here for safe direct manipulation
+	relay.circuitsMu.Lock()
 	relay.circuits[recentCircuitID] = &Circuit{
 		ID:         recentCircuitID,  // Use ID
 		PrevPeer:   peer.ID("peer1"), // Use peer.ID type
@@ -147,19 +153,20 @@ func TestStaleCircuitCleanup(t *testing.T) {
 		SharedKey:  testKey,                          // Use SharedKey
 		LastActive: time.Now().Add(-2 * idleTimeout), // Older than the timeout
 	}
-	// relay.circuitsMu.Unlock() // Cannot access
+	relay.circuitsMu.Unlock()
 
 	// Wait briefly to ensure time differences are registered
 	time.Sleep(5 * time.Millisecond)
 
-	// Run cleanup - Call the exported method with duration
+	// Run cleanup manually - Call the exported method with duration
+	// This function handles its own locking internally now.
 	relay.cleanupStaleCircuits(idleTimeout)
 
-	// Verify stale circuit was removed but recent one remains - Direct map access (unsafe)
-	// relay.circuitsMu.RLock() // Cannot access
+	// Verify stale circuit was removed but recent one remains - Use Read Lock for safe access
+	relay.circuitsMu.RLock() // <<< Acquire Read Lock
 	_, recentExists := relay.circuits[recentCircuitID]
 	_, staleExists := relay.circuits[staleCircuitID]
-	// relay.circuitsMu.RUnlock() // Cannot access
+	relay.circuitsMu.RUnlock() // <<< Release Read Lock
 
 	assert.True(t, recentExists, "Recent circuit should still exist")
 	assert.False(t, staleExists, "Stale circuit should be removed")

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/gob" // Import gob for serialization
 	"fmt"          // Import fmt for error formatting
+	"log"          // Added for debugging
 	"sync"         // Import sync for mutex
 	"time"         // Import time
 
@@ -54,7 +55,7 @@ func (cb *CircuitBuilder) BuildCircuit(ctx context.Context, path []peer.ID) (*Cl
 	}
 
 	circuitID := uuid.NewString()
-	// log.Infof("Building circuit %s with path: %v", circuitID, path) // Example logging
+	log.Printf("[%s] Client: Building circuit %s with path: %v", time.Now().Format(time.RFC3339Nano), circuitID, path) // DEBUG
 
 	entryNode := path[0]
 	exitNode := path[len(path)-1]
@@ -63,86 +64,84 @@ func (cb *CircuitBuilder) BuildCircuit(ctx context.Context, path []peer.ID) (*Cl
 	buildCtx, cancel := context.WithTimeout(ctx, 60*time.Second) // TODO: Make timeout configurable
 	defer cancel()                                               // Ensure cancellation happens if function exits early
 
-	// 1. Connect to the entry node
-	// log.Debugf("Circuit %s: Connecting to entry node %s", circuitID, entryNode)
-	// Note: We assume the host might already be connected or can connect.
-	// Direct connection attempt here might be redundant if host manages connections.
-	// Consider adding explicit connection logic if needed:
-	// err := cb.host.Connect(buildCtx, peer.AddrInfo{ID: entryNode})
-	// if err != nil {
-	// 	 return nil, fmt.Errorf("failed to connect to entry node %s: %w", entryNode, err)
-	// }
-
-	// 2. Open setup stream to the entry node
-	// log.Debugf("Circuit %s: Opening setup stream to %s", circuitID, entryNode)
+	// 1. Connect and open setup stream to the entry node
+	log.Printf("[%s] Client: Opening setup stream to entry node %s for circuit %s", time.Now().Format(time.RFC3339Nano), entryNode, circuitID) // DEBUG
 	stream, err := cb.host.NewStream(buildCtx, entryNode, protocol.ID(CircuitSetupProtocol))
 	if err != nil {
 		return nil, fmt.Errorf("failed to open setup stream to entry node %s: %w", entryNode, err)
 	}
-	// log.Debugf("Circuit %s: Setup stream opened: %s", circuitID, stream.ID())
+	log.Printf("[%s] Client: Setup stream opened: %s", time.Now().Format(time.RFC3339Nano), stream.ID()) // DEBUG
 
-	// Defer stream reset in case of errors during build
+	// Defer stream reset/close based on success or failure
+	success := false
 	defer func() {
-		if err != nil && stream != nil {
-			// log.Warnf("Circuit %s: Resetting stream due to build error: %v", circuitID, err)
-			_ = stream.Reset() // Best effort reset
+		if !success && stream != nil {
+			log.Printf("[%s] Client: Resetting stream due to build error for circuit %s", time.Now().Format(time.RFC3339Nano), circuitID) // DEBUG
+			_ = stream.Reset()                                                                                                            // Reset on error
 		}
 	}()
 
+	// --- Handshake Removed ---
+	// The byte-level handshake (0x01/0x02) was removed as it caused a mismatch
+	// with the relay, which expects the gob message directly.
+
+	// Create encoder and decoder directly on the stream
+	// The underlying MockStream or real stream should handle buffering if needed.
+	encoder := gob.NewEncoder(stream)
+	decoder := gob.NewDecoder(stream)
+
 	keys := make([][]byte, len(path))
-	var currentStream network.Stream = stream // Use this stream for the entire setup process
+	var relayHopPubKeyBytes []byte // To store the public key received from the relay
 
 	// 3. Establish/Extend hop by hop
 	for i, hopPeerID := range path {
-		// log.Debugf("Circuit %s: Processing hop %d: %s", circuitID, i, hopPeerID)
+		log.Printf("[%s] Client: Processing hop %d: %s for circuit %s", time.Now().Format(time.RFC3339Nano), i, hopPeerID, circuitID) // DEBUG
 
-		// Generate ephemeral key pair for this hop's DH exchange
 		clientHopPrivKey, clientHopPubKeyBytes, err := GenerateEphemeralKeyPair()
 		if err != nil {
 			return nil, fmt.Errorf("failed to generate ephemeral key for hop %d (%s): %w", i, hopPeerID, err)
 		}
 
-		var nextHopPeerID peer.ID
+		var nextHopInPath peer.ID
 		if i+1 < len(path) {
-			nextHopPeerID = path[i+1]
+			nextHopInPath = path[i+1]
 		}
 
-		var relayHopPubKeyBytes []byte
-
 		if i == 0 { // First hop: Establish
-			// log.Debugf("Circuit %s: Sending TypeEstablish to %s", circuitID, hopPeerID)
 			establishReq := CircuitSetupMessage{
-				Type:      TypeEstablish,
-				CircuitID: circuitID,
-				PublicKey: clientHopPubKeyBytes,
-				// NextHopPeerID is implicitly the next in path, but we send it for Extend
-				NextHopPeerID: nextHopPeerID, // Send next hop even for establish for consistency? Or only in Extend? Test expects it in Extend.
-			}
-			// For Establish, NextHopPeerID might not be strictly needed in the message itself,
-			// but the relay needs to know where to extend *if* it's not the exit node.
-			// Let's align with the multi-hop test structure where Extend carries the next hop.
-			// So, for TypeEstablish, NextHopPeerID might be empty here. Let's clear it.
-			if len(path) > 1 {
-				establishReq.NextHopPeerID = path[1] // Tell R1 where to go next
-			} else {
-				establishReq.NextHopPeerID = "" // R1 is the exit node
+				Type:          TypeEstablish,
+				CircuitID:     circuitID,
+				PublicKey:     clientHopPubKeyBytes,
+				NextHopPeerID: nextHopInPath, // Tell R1 about R2 if it exists
+				// NextNextHopPeerID is not relevant for TypeEstablish
 			}
 
-			err = WriteGob(currentStream, &establishReq)
+			log.Printf("[%s] Client: Sending Establish request to %s for circuit %s", time.Now().Format(time.RFC3339Nano), hopPeerID, circuitID) // DEBUG
+			err = encoder.Encode(&establishReq)
 			if err != nil {
+				log.Printf("[%s] Client: Error sending Establish request to %s: %v", time.Now().Format(time.RFC3339Nano), hopPeerID, err) // DEBUG
 				return nil, fmt.Errorf("failed to send Establish request for hop %d (%s): %w", i, hopPeerID, err)
 			}
+			// Flush is likely handled by gob encoder or underlying stream; removed explicit flush
+			// err = bufWriter.Flush() // Removed
+			// if err != nil {
+			// 	log.Printf("[%s] Client: Error flushing Establish request to %s: %v", time.Now().Format(time.RFC3339Nano), hopPeerID, err) // DEBUG
+			// 	return nil, fmt.Errorf("failed to flush Establish request for hop %d (%s): %w", i, hopPeerID, err)
+			// }
+			log.Printf("[%s] Client: Sent Establish request to %s", time.Now().Format(time.RFC3339Nano), hopPeerID) // DEBUG
 
-			// Read response
+			// Read Established response
 			var establishResp CircuitSetupResponse
-			err = ReadGob(currentStream, &establishResp)
+			log.Printf("[%s] Client: Waiting for Establish response from %s on stream %s (before Decode)", time.Now().Format(time.RFC3339Nano), hopPeerID, stream.ID()) // DEBUG
+			err = decoder.Decode(&establishResp)
 			if err != nil {
+				log.Printf("[%s] Client: Error reading Establish response from %s on stream %s: %v", time.Now().Format(time.RFC3339Nano), hopPeerID, stream.ID(), err) // DEBUG
 				return nil, fmt.Errorf("failed to read Establish response for hop %d (%s): %w", i, hopPeerID, err)
 			}
-			// log.Debugf("Circuit %s: Received Establish response from %s: %+v", circuitID, hopPeerID, establishResp)
+			log.Printf("[%s] Client: Successfully decoded Establish response from %s on stream %s (Status: %d)", time.Now().Format(time.RFC3339Nano), hopPeerID, stream.ID(), establishResp.Status) // DEBUG
 
-			if establishResp.Status != StatusOK {
-				return nil, fmt.Errorf("entry node %s rejected circuit setup: status %d", hopPeerID, establishResp.Status)
+			if establishResp.Status != StatusOK || establishResp.Type != TypeEstablished {
+				return nil, fmt.Errorf("entry node %s rejected circuit setup: status %d, type %d", hopPeerID, establishResp.Status, establishResp.Type)
 			}
 			if establishResp.CircuitID != circuitID {
 				return nil, fmt.Errorf("entry node %s responded with wrong circuit ID: expected %s, got %s", hopPeerID, circuitID, establishResp.CircuitID)
@@ -153,74 +152,48 @@ func (cb *CircuitBuilder) BuildCircuit(ctx context.Context, path []peer.ID) (*Cl
 			relayHopPubKeyBytes = establishResp.PublicKey
 
 		} else { // Subsequent hops: Extend
-			// log.Debugf("Circuit %s: Sending TypeExtend for hop %d (%s) via entry node", circuitID, i, hopPeerID)
-			// The Extend message needs to be wrapped/encrypted for the target hop.
-			// The client sends an Extend request *through* the already established part of the circuit.
-			// This requires a way to send data packets over the circuit stream, which we haven't fully defined yet.
-			// The test mocks this by having relays directly talk setup protocol.
-			//
-			// **Simplification for initial implementation (matching test mocks):**
-			// Assume the client can somehow make the *previous* hop send the Extend request.
-			// This isn't realistic onion routing but matches the test setup flow.
-			// A real implementation needs the client to send encrypted messages over the main stream.
-			//
-			// **Let's stick to the test logic for now:** The client reads the response from the *previous* hop's
-			// extension attempt. The test setup implies the client gets the result of the extension
-			// back on the main stream after the relays coordinate.
-
-			// **Correction:** The client *does* send the Extend request over the main stream,
-			// but it needs to be layered. The test mocks bypass the layering.
-			// We need to implement the layering here.
-
-			// TODO: Implement proper layered encryption for Extend messages.
-			// For now, simulate receiving the response as if layering worked.
-			// This part needs significant refinement for actual security.
-
-			// Placeholder: Assume we received the public key of the current hop (hopPeerID)
-			// from the previous hop's response (which isn't explicitly modeled yet).
-			// The test structure implies the `Established` response from R1 contains R2's key,
-			// and R2's `Extended` response contains R3's key. This needs clarification.
-			// Let's assume the response reading logic needs adjustment based on message types.
-
-			// **Revised approach based on test flow:**
-			// The client sends Establish to R1. Reads Established from R1 (contains R1's pubkey). Derives key K1.
-			// The client sends Extend(R2) to R1 (encrypted with K1, contains client pubkey C_PK2). R1 forwards.
-			// R2 responds Extended(R2_PK) (encrypted with K1). R1 forwards.
-			// Client reads Extended from R1, decrypts with K1, gets R2_PK. Derives key K2.
-			// Client sends Extend(R3) to R1 (encrypted K1(encrypted K2(payload, C_PK3))). R1 forwards. R2 forwards.
-			// R3 responds Extended(R3_PK) (encrypted K2(payload)). R2 forwards (encrypted K1(payload)). R1 forwards.
-			// Client reads response from R1, decrypts K1, decrypts K2, gets R3_PK. Derives key K3.
-
-			// This requires sending/receiving logic within the loop.
-
-			// Let's refine the loop structure:
-			// The initial Establish/Response happens *before* the loop for hop 0.
-			// The loop (starting i=1) handles the Extend/Extended sequence.
-
-			// **Implementing simplified multi-hop logic based on test structure:**
-			// Send Extend request (unencrypted, via entry node stream)
-			extendReq := CircuitSetupMessage{
-				Type:          TypeExtend,
-				CircuitID:     circuitID,
-				PublicKey:     clientHopPubKeyBytes, // Client's ephemeral pubkey for this hop
-				NextHopPeerID: nextHopPeerID,        // Tell the *current* hop where to extend next
+			// Determine the hop *after* the current target hop (hopPeerID)
+			var nextNextHopInPath peer.ID
+			if i+1 < len(path) {
+				nextNextHopInPath = path[i+1]
 			}
-			// log.Debugf("Circuit %s: Sending TypeExtend for hop %d (%s) via entry node", circuitID, i, hopPeerID)
-			err = WriteGob(currentStream, &extendReq)
+
+			extendReq := CircuitSetupMessage{
+				Type:              TypeExtend,
+				CircuitID:         circuitID,
+				PublicKey:         clientHopPubKeyBytes,
+				NextHopPeerID:     hopPeerID,         // Target of this extension step
+				NextNextHopPeerID: nextNextHopInPath, // Tell the previous hop about the one after this target [NEW]
+			}
+
+			log.Printf("[%s] Client: Sending Extend request targeting %s (next: %s) via entry node for circuit %s", time.Now().Format(time.RFC3339Nano), hopPeerID, nextNextHopInPath, circuitID) // DEBUG
+			log.Printf("[%s] Client: Extend request NextHopPeerID being sent: [%s]", time.Now().Format(time.RFC3339Nano), extendReq.NextHopPeerID.String())                                       // MORE DEBUG
+			log.Printf("[%s] Client: Extend request NextNextHopPeerID being sent: [%s]", time.Now().Format(time.RFC3339Nano), extendReq.NextNextHopPeerID.String())                               // MORE DEBUG
+			err = encoder.Encode(&extendReq)
 			if err != nil {
+				log.Printf("[%s] Client: Error sending Extend request targeting %s: %v", time.Now().Format(time.RFC3339Nano), hopPeerID, err) // DEBUG
 				return nil, fmt.Errorf("failed to send Extend request for hop %d (%s): %w", i, hopPeerID, err)
 			}
+			// Flush is likely handled by gob encoder or underlying stream; removed explicit flush
+			// err = bufWriter.Flush() // Removed
+			// if err != nil {
+			// 	log.Printf("[%s] Client: Error flushing Extend request targeting %s: %v", time.Now().Format(time.RFC3339Nano), hopPeerID, err) // DEBUG
+			// 	return nil, fmt.Errorf("failed to flush Extend request for hop %d (%s): %w", i, hopPeerID, err)
+			// }
+			log.Printf("[%s] Client: Sent Extend request targeting %s", time.Now().Format(time.RFC3339Nano), hopPeerID) // DEBUG
 
-			// Read Extended response (unencrypted, via entry node stream)
+			// Read Extended response
 			var extendedResp CircuitSetupResponse
-			err = ReadGob(currentStream, &extendedResp)
+			log.Printf("[%s] Client: Waiting for Extended response for hop %s on stream %s (before Decode)", time.Now().Format(time.RFC3339Nano), hopPeerID, stream.ID()) // DEBUG
+			err = decoder.Decode(&extendedResp)
 			if err != nil {
+				log.Printf("[%s] Client: Error reading Extended response for hop %s on stream %s: %v", time.Now().Format(time.RFC3339Nano), hopPeerID, stream.ID(), err) // DEBUG
 				return nil, fmt.Errorf("failed to read Extended response for hop %d (%s): %w", i, hopPeerID, err)
 			}
-			// log.Debugf("Circuit %s: Received Extended response for hop %d (%s): %+v", circuitID, i, hopPeerID, extendedResp)
+			log.Printf("[%s] Client: Successfully decoded Extended response for hop %s on stream %s (Status: %d)", time.Now().Format(time.RFC3339Nano), hopPeerID, stream.ID(), extendedResp.Status) // DEBUG
 
-			if extendedResp.Status != StatusOK {
-				return nil, fmt.Errorf("relay node %s rejected circuit extension: status %d", hopPeerID, extendedResp.Status)
+			if extendedResp.Status != StatusOK || extendedResp.Type != TypeExtended {
+				return nil, fmt.Errorf("relay node %s rejected circuit extension: status %d, type %d", hopPeerID, extendedResp.Status, extendedResp.Type)
 			}
 			if extendedResp.CircuitID != circuitID {
 				return nil, fmt.Errorf("relay node %s responded with wrong circuit ID for extension: expected %s, got %s", hopPeerID, circuitID, extendedResp.CircuitID)
@@ -234,35 +207,14 @@ func (cb *CircuitBuilder) BuildCircuit(ctx context.Context, path []peer.ID) (*Cl
 		// Derive shared key for this hop
 		sharedKey, err := DeriveSharedKey(clientHopPrivKey, relayHopPubKeyBytes)
 		if err != nil {
-			_ = stream.Reset() // Reset stream on error
 			return nil, fmt.Errorf("failed to derive shared key for hop %d (%s): %w", i, hopPeerID, err)
 		}
 		keys[i] = sharedKey
-		// log.Debugf("Circuit %s: Derived shared key for hop %d (%s)", circuitID, i, hopPeerID)
+		log.Printf("[%s] Client: Derived shared key for hop %d (%s)", time.Now().Format(time.RFC3339Nano), i, hopPeerID) // DEBUG
 	}
 
-	// If loop finished without error for single hop:
-	if len(path) == 1 {
-		// Create a context for the circuit's lifetime, derived from the initial context
-		circuitCtx, circuitCancel := context.WithCancel(ctx)
-
-		circuit := &ClientCircuit{
-			ID:        circuitID,
-			Path:      path,
-			EntryNode: entryNode,
-			ExitNode:  exitNode,
-			Keys:      keys,
-			Stream:    stream, // Keep the stream open
-			host:      cb.host,
-			ctx:       circuitCtx,
-			cancel:    circuitCancel,
-		}
-		// log.Infof("Circuit %s successfully built (single hop)", circuitID)
-		return circuit, nil
-	}
-	// else part removed as multi-hop now handled within the loop
-
-	// If loop completed successfully for all hops (including multi-hop)
+	// If loop completed successfully for all hops
+	success = true // Mark as success so stream isn't reset by defer
 	circuitCtx, circuitCancel := context.WithCancel(ctx)
 	circuit := &ClientCircuit{
 		ID:        circuitID,
@@ -275,150 +227,179 @@ func (cb *CircuitBuilder) BuildCircuit(ctx context.Context, path []peer.ID) (*Cl
 		ctx:       circuitCtx,
 		cancel:    circuitCancel,
 	}
-	// log.Infof("Circuit %s successfully built (%d hops)", circuitID, len(path))
+	log.Printf("[%s] Client: Circuit %s successfully built (%d hops)", time.Now().Format(time.RFC3339Nano), circuitID, len(path)) // DEBUG
 	return circuit, nil
-
 }
 
 // Close tears down the circuit by sending a teardown message to the entry node
 // and closing the underlying libp2p stream.
+// Close tears down the circuit by sending a teardown message to the entry node
+// over a dedicated teardown stream and then closing the main circuit stream.
 func (cc *ClientCircuit) Close() error {
 	cc.mu.Lock()
 	defer cc.mu.Unlock()
 
 	if cc.Stream == nil {
-		// log.Warnf("Circuit %s: Close called on already closed or nil stream", cc.ID)
-		return nil // Already closed or wasn't properly initialized
+		log.Printf("[%s] Circuit %s: Close called on already closed or nil stream", time.Now().Format(time.RFC3339Nano), cc.ID) // DEBUG log
+		return nil                                                                                                              // Already closed or wasn't properly initialized
 	}
 
-	// log.Infof("Circuit %s: Closing circuit", cc.ID)
+	log.Printf("[%s] Circuit %s: Closing circuit", time.Now().Format(time.RFC3339Nano), cc.ID) // DEBUG log
 
-	// 1. Send Teardown message
-	teardownMsg := CircuitSetupMessage{
+	// 1. Send Teardown message over a separate stream
+	teardownMsg := CircuitSetupMessage{ // Use CircuitSetupMessage for now
 		Type:      TypeTeardown,
 		CircuitID: cc.ID,
 	}
-	// log.Debugf("Circuit %s: Sending teardown message", cc.ID)
-	// Use a short timeout for sending teardown, handled by deadline below
 
-	// Set write deadline on the stream
-	_ = cc.Stream.SetWriteDeadline(time.Now().Add(5 * time.Second)) // Best effort
+	// Use a short timeout context for the teardown attempt
+	tdCtx, tdCancel := context.WithTimeout(cc.ctx, 5*time.Second)
+	defer tdCancel()
 
-	err := WriteGob(cc.Stream, &teardownMsg)
+	log.Printf("[%s] Circuit %s: Opening teardown stream to %s", time.Now().Format(time.RFC3339Nano), cc.ID, cc.EntryNode) // DEBUG log
+	teardownStream, err := cc.host.NewStream(tdCtx, cc.EntryNode, protocol.ID(CircuitTeardownProtocol))
 	if err != nil {
-		// Log error but proceed with closing the stream
-		// log.Errorf("Circuit %s: Failed to send teardown message: %v. Resetting stream.", cc.ID, err)
-		_ = cc.Stream.Reset() // Reset if write failed
+		// Log error but proceed with closing the main stream anyway
+		log.Printf("[%s] Circuit %s: Failed to open teardown stream to %s: %v. Proceeding to close main stream.", time.Now().Format(time.RFC3339Nano), cc.ID, cc.EntryNode, err) // DEBUG log
 	} else {
-		// log.Debugf("Circuit %s: Teardown message sent, closing stream.", cc.ID)
-		// Close the stream gracefully if teardown was sent successfully
-		_ = cc.Stream.Close() // Best effort close
+		log.Printf("[%s] Circuit %s: Teardown stream opened: %s", time.Now().Format(time.RFC3339Nano), cc.ID, teardownStream.ID()) // DEBUG log
+		err = WriteGob(teardownStream, &teardownMsg)
+		if err != nil {
+			// Log error but proceed with closing streams
+			log.Printf("[%s] Circuit %s: Failed to send teardown message via dedicated stream: %v. Resetting teardown stream.", time.Now().Format(time.RFC3339Nano), cc.ID, err) // DEBUG log
+			_ = teardownStream.Reset()
+		} else {
+			log.Printf("[%s] Circuit %s: Teardown message sent via dedicated stream.", time.Now().Format(time.RFC3339Nano), cc.ID) // DEBUG log
+		}
+		// Close the teardown stream immediately after sending (or attempting to send)
+		_ = teardownStream.Close()
+		log.Printf("[%s] Circuit %s: Teardown stream closed.", time.Now().Format(time.RFC3339Nano), cc.ID) // DEBUG log
 	}
-	_ = cc.Stream.SetWriteDeadline(time.Time{}) // Clear deadline
 
-	// 2. Mark stream as closed
-	cc.Stream = nil
+	// 2. Close the original main circuit stream
+	log.Printf("[%s] Circuit %s: Closing main stream %s", time.Now().Format(time.RFC3339Nano), cc.ID, cc.Stream.ID()) // DEBUG log
+	if closeErr := cc.Stream.Close(); closeErr != nil {
+		log.Printf("[%s] Circuit %s: Error closing main stream (Resetting instead): %v", time.Now().Format(time.RFC3339Nano), cc.ID, closeErr) // DEBUG log
+		_ = cc.Stream.Reset()
+	} else {
+		log.Printf("[%s] Circuit %s: Main stream closed gracefully.", time.Now().Format(time.RFC3339Nano), cc.ID) // DEBUG log
+	}
+	cc.Stream = nil // Mark main stream as closed locally
 
 	// 3. Cancel the circuit's context
 	if cc.cancel != nil {
 		cc.cancel()
 	}
 
-	// log.Infof("Circuit %s: Circuit closed", cc.ID)
-	return nil // Return nil even if teardown send failed, as stream is closed
+	log.Printf("[%s] Circuit %s: Circuit closed function finished.", time.Now().Format(time.RFC3339Nano), cc.ID) // DEBUG log
+	return nil                                                                                                   // Return nil even if teardown send failed, as streams are closed/reset
 }
 
-// SendData wraps the payload in onion layers and sends it over the circuit stream
-// to the specified destination peer.
+// SendData wraps the payload in onion layers and sends it over a new data stream
+// via the established circuit to the entry node.
+// The destination peer ID is used by CreateOnionLayers to structure the reply info
+// if needed, but the actual routing is dictated by the layered encryption.
 func (cc *ClientCircuit) SendData(ctx context.Context, destination peer.ID, payload []byte) error {
-	cc.mu.Lock()
-	defer cc.mu.Unlock()
-
+	cc.mu.Lock() // Lock to prevent closing the circuit while sending
 	if cc.Stream == nil {
+		cc.mu.Unlock()
 		return fmt.Errorf("circuit %s is closed, cannot send data", cc.ID)
 	}
+	// We copy necessary fields under lock to use them after unlock
+	circuitID := cc.ID
+	entryNode := cc.EntryNode
+	path := cc.Path
+	keys := cc.Keys
+	host := cc.host
+	cc.mu.Unlock() // Unlock early to allow concurrent Sends or Close attempts
+
+	log.Printf("[%s] Circuit %s: Preparing to send data (%d bytes) via entry %s", time.Now().Format(time.RFC3339Nano), circuitID, len(payload), entryNode) // DEBUG log
 
 	// 1. Create InnerPayload
-	// For now, InnerPayload just wraps the raw data.
-	// We might add message types or destination info later.
 	inner := InnerPayload{
 		// MessageType: MessageTypeData, // Example if we add types
+		// FinalRecipient: destination, // Could be added if needed by exit node logic beyond routing
 		Data: payload,
 	}
 
 	// 2. Serialize InnerPayload using gob
 	var innerPayloadBuf bytes.Buffer
-	encoder := gob.NewEncoder(&innerPayloadBuf)
-	if err := encoder.Encode(inner); err != nil {
-		return fmt.Errorf("failed to serialize inner payload for circuit %s: %w", cc.ID, err)
+	if err := gob.NewEncoder(&innerPayloadBuf).Encode(&inner); err != nil {
+		return fmt.Errorf("failed to serialize inner payload for circuit %s: %w", circuitID, err)
 	}
 	serializedInnerPayload := innerPayloadBuf.Bytes()
+	log.Printf("[%s] Circuit %s: Inner payload serialized (%d bytes)", time.Now().Format(time.RFC3339Nano), circuitID, len(serializedInnerPayload)) // DEBUG log
+
 	// 3. Wrap in onion layers
 	// CreateOnionLayers handles the layering and encryption using the circuit keys.
-	// It needs the path, keys, the *final* destination peer ID, and the innermost payload.
-	// It returns the fully layered encrypted payload bytes for the first hop.
-	encryptedPayloadBytes, err := CreateOnionLayers(cc.Path, cc.Keys, destination, serializedInnerPayload)
+	encryptedPayloadBytes, err := CreateOnionLayers(path, keys, destination, serializedInnerPayload)
 	if err != nil {
-		return fmt.Errorf("failed to create onion layers for circuit %s: %w", cc.ID, err)
+		return fmt.Errorf("failed to create onion layers for circuit %s: %w", circuitID, err)
 	}
+	log.Printf("[%s] Circuit %s: Onion layers created (%d bytes total)", time.Now().Format(time.RFC3339Nano), circuitID, len(encryptedPayloadBytes)) // DEBUG log
 
-	// 4. Send the OnionPacket over the stream
-	// log.Debugf("Circuit %s: Preparing data packet (%d bytes total)", cc.ID, len(encryptedPayloadBytes))
-
-	// Determine the next hop for the packet sent to the entry node
-	var nextHopForPacket peer.ID
-	if len(cc.Path) > 1 {
-		nextHopForPacket = cc.Path[1]
+	// 4. Construct the OnionPacket to send to the entry node
+	// The HopInfo here tells the *entry node* where to send the packet next (R2)
+	var nextHopForEntry peer.ID
+	if len(path) > 1 {
+		nextHopForEntry = path[1]
 	} else {
-		// For a single-hop circuit, the entry node is the exit node.
-		// The HopInfo might be less critical, but let's point it to the final destination.
-		nextHopForPacket = destination
+		// This shouldn't happen for multi-hop SendData, but handle defensively.
+		// If it's a single-hop circuit, the entry *is* the exit.
+		// The HopInfo might be less critical, maybe point to self or destination?
+		// Let's assume CreateOnionLayers handled this appropriately,
+		// and the entry node's decryption will yield InnerPayload.
+		// For now, leave it potentially empty, relying on entry node logic.
+		log.Printf("[%s] Circuit %s: Warning - single hop circuit detected in SendData?", time.Now().Format(time.RFC3339Nano), circuitID) // DEBUG log
+		nextHopForEntry = entryNode                                                                                                       // Point to self? or destination? Let's stick to entry node for now.
+
 	}
 
-	// Construct the OnionPacket to send to the entry node
 	packetToSend := &OnionPacket{
-		CircuitID: cc.ID,
+		CircuitID: circuitID,
 		HopInfo: HopInfo{
-			NextPeer: nextHopForPacket,
+			NextPeer: nextHopForEntry, // Tell R1 where to send after decryption
 		},
 		EncryptedPayload: encryptedPayloadBytes,
 	}
 
-	// 4. Open a new stream to the entry node using the RelayProtocol
-	// log.Debugf("Circuit %s: Opening data stream to entry node %s", cc.ID, cc.EntryNode)
-	dataStream, err := cc.host.NewStream(ctx, cc.EntryNode, protocol.ID(RelayProtocol))
+	// 5. Open a *new* stream to the entry node using the RelayProtocol
+	log.Printf("[%s] Circuit %s: Opening data stream to entry node %s", time.Now().Format(time.RFC3339Nano), circuitID, entryNode) // DEBUG log
+
+	// Use a separate context for the data stream attempt, derived from the input ctx
+	streamCtx, streamCancel := context.WithTimeout(ctx, 15*time.Second) // Timeout for stream opening + sending
+	defer streamCancel()
+
+	dataStream, err := host.NewStream(streamCtx, entryNode, protocol.ID(RelayProtocol))
 	if err != nil {
 		// If opening the data stream fails, the circuit might still be usable for setup/teardown.
-		// We don't automatically close the main circuit stream here.
-		return fmt.Errorf("failed to open data stream for circuit %s: %w", cc.ID, err)
+		return fmt.Errorf("failed to open data stream for circuit %s: %w", circuitID, err)
 	}
-	defer dataStream.Close() // Ensure data stream is closed after sending
-	// log.Debugf("Circuit %s: Data stream opened: %s", cc.ID, dataStream.ID())
+	defer dataStream.Close()                                                                                               // Ensure data stream is closed after sending
+	log.Printf("[%s] Circuit %s: Data stream opened: %s", time.Now().Format(time.RFC3339Nano), circuitID, dataStream.ID()) // DEBUG log
 
-	// 5. Send the OnionPacket over the data stream
-	// log.Debugf("Circuit %s: Sending data packet over data stream %s", cc.ID, dataStream.ID())
+	// 6. Send the OnionPacket over the data stream
+	log.Printf("[%s] Circuit %s: Sending data packet over data stream %s", time.Now().Format(time.RFC3339Nano), circuitID, dataStream.ID()) // DEBUG log
 
-	// Set write deadline on the data stream
-	deadline, hasDeadline := ctx.Deadline()
+	// Set write deadline based on context or default
+	deadline, hasDeadline := streamCtx.Deadline()
 	if !hasDeadline {
-		deadline = time.Now().Add(10 * time.Second) // Default send timeout
+		deadline = time.Now().Add(10 * time.Second) // Default send timeout if context has no deadline
 	}
 	if err := dataStream.SetWriteDeadline(deadline); err != nil {
-		// Log or handle error setting deadline, but proceed with write attempt
-		// log.Warnf("Circuit %s: Failed to set write deadline for data stream: %v", cc.ID, err)
+		log.Printf("[%s] Circuit %s: Warning - Failed to set write deadline for data stream: %v", time.Now().Format(time.RFC3339Nano), circuitID, err) // DEBUG log
 	}
-	defer dataStream.SetWriteDeadline(time.Time{}) // Clear deadline afterwards
+	// No need to defer clearing deadline, Close() handles it.
 
-	// Send the constructed OnionPacket struct (pointer)
 	err = WriteGob(dataStream, packetToSend)
 	if err != nil {
 		// If sending fails on the data stream, reset it. The main circuit might still be okay.
-		// log.Errorf("Circuit %s: Failed to send data packet over data stream: %v. Resetting data stream.", cc.ID, err)
-		_ = dataStream.Reset() // Reset data stream on error
-		return fmt.Errorf("failed to send data packet over circuit %s data stream: %w", cc.ID, err)
+		log.Printf("[%s] Circuit %s: Failed to send data packet over data stream %s: %v. Resetting data stream.", time.Now().Format(time.RFC3339Nano), circuitID, dataStream.ID(), err) // DEBUG log
+		_ = dataStream.Reset()                                                                                                                                                          // Reset data stream on error
+		return fmt.Errorf("failed to send data packet over circuit %s data stream: %w", circuitID, err)
 	}
 
-	// log.Debugf("Circuit %s: Data packet sent successfully over data stream", cc.ID)
+	log.Printf("[%s] Circuit %s: Data packet sent successfully over data stream %s", time.Now().Format(time.RFC3339Nano), circuitID, dataStream.ID()) // DEBUG log
 	return nil
 }
 

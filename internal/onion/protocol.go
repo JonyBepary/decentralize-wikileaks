@@ -2,6 +2,7 @@
 package onion
 
 import (
+	"bufio" // Added for buffered I/O
 	"bytes"
 	"encoding/gob"
 	"fmt"
@@ -21,6 +22,7 @@ const (
 	CircuitSetupProtocol    = "/wikileaks/onion-circuit-setup/1.0.0"
 	CircuitTeardownProtocol = "/wikileaks/onion-circuit-teardown/1.0.0" // Keep for explicit teardown
 	RelayProtocol           = "/wikileaks/onion-relay/1.0.0"
+	TargetServiceProtocol   = "/wikileaks/onion-target-service/1.0.0" // Protocol for the final destination service
 
 	// Sizes
 	KeySize = 32 // bytes, for Curve25519 keys
@@ -53,11 +55,11 @@ const (
 
 // CircuitSetupMessage is used for establishing and extending circuits.
 type CircuitSetupMessage struct {
-	Type          uint8   // TypeEstablish or TypeExtend
-	CircuitID     string  // Identifies the circuit being built/extended (Changed to string)
-	PublicKey     []byte  // Client's ephemeral public key for DH exchange
-	NextHopPeerID peer.ID // For TypeExtend: The peer ID of the next relay (Ri)
-	// Payload []byte // Replaced by specific fields
+	Type              uint8   // TypeEstablish or TypeExtend
+	CircuitID         string  // Identifies the circuit being built/extended (Changed to string)
+	PublicKey         []byte  // Client's ephemeral public key for DH exchange
+	NextHopPeerID     peer.ID // For TypeEstablish: The peer ID of the *next* relay (R2) if known. For TypeExtend: The peer ID of the target relay (Ri)
+	NextNextHopPeerID peer.ID // For TypeExtend: The peer ID of the hop *after* the target relay (Ri+1) [NEW]
 }
 
 // ExtendPayload is the structure encrypted within TypeExtend message's encrypted part
@@ -84,19 +86,31 @@ type CircuitTeardownMessage struct {
 
 // --- Generic Gob Encoding/Decoding Helpers ---
 
-// WriteGob encodes and writes an interface{} value to the writer.
+// WriteGob encodes and writes an interface{} value to the writer using buffered I/O.
 func WriteGob(w io.Writer, data interface{}) error {
-	enc := gob.NewEncoder(w)
+	// Wrap the writer with a buffered writer
+	bw := bufio.NewWriter(w)
+	enc := gob.NewEncoder(bw)
 	if err := enc.Encode(data); err != nil {
 		return fmt.Errorf("failed to encode gob: %w", err)
+	}
+	// Flush the buffer to ensure data is written to the underlying writer
+	if err := bw.Flush(); err != nil {
+		return fmt.Errorf("failed to flush buffer after gob encode: %w", err)
 	}
 	return nil
 }
 
-// ReadGob reads and decodes data from the reader into the provided interface{}.
+// ReadGob reads and decodes data from the reader into the provided interface{} using buffered I/O.
 func ReadGob(r io.Reader, data interface{}) error {
-	dec := gob.NewDecoder(r)
+	// Wrap the reader with a buffered reader
+	br := bufio.NewReader(r)
+	dec := gob.NewDecoder(br)
 	if err := dec.Decode(data); err != nil {
+		// Check specifically for EOF which might be expected in some cases
+		if err == io.EOF {
+			return io.EOF // Propagate EOF clearly
+		}
 		return fmt.Errorf("failed to decode gob: %w", err)
 	}
 	return nil

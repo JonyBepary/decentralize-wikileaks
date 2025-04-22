@@ -239,8 +239,9 @@ func (r *Relay) getOrCreateRelayStream(circuit *Circuit) (network.Stream, error)
 // handleCircuitSetup handles incoming requests to set up or extend a circuit.
 func (r *Relay) handleCircuitSetup(s network.Stream) {
 	remotePeer := s.Conn().RemotePeer() // Changed from s.Peer()
-	r.logger.Debugf("Received circuit setup stream from %s", remotePeer.ShortString())
-	defer s.Close()
+	r.logger.Debugf("Received circuit setup stream %s from %s", s.ID(), remotePeer.ShortString())
+	// Removed defer s.Close() - The stream should remain open after setup for potential extensions or client-side management.
+	// The client or teardown logic is responsible for closing. Consider adding idle timeouts.
 
 	// Read the setup message
 	var setupMsg CircuitSetupMessage
