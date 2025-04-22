@@ -1,6 +1,45 @@
-=== RUN   TestKuboIPFSInteractor_AddData
-    kubo_interactor_test.go:33: Placeholder: KuboIPFSInteractor not yet implemented.
-    kubo_interactor_test.go:39: Skipping AddData test as KuboIPFSInteractor implementation is pending.
---- SKIP: TestKuboIPFSInteractor_AddData (0.00s)
+=== RUN   TestMockAnonymityProvider_Interface
+MockAnonymityProvider: Dialed peer QmVHonKpGN7G8TzLeoXLDGkVKSEtFbqGUzY5qFg3GNjbM6
+MockAnonymityProvider: Listening on (mock) /memory/0
+MockAnonymityProvider: Close() called
+MockAnonymityProvider: Cancelling all subscriptions
+--- PASS: TestMockAnonymityProvider_Interface (0.00s)
+=== RUN   TestMockAnonymityProvider_FailModes
+--- PASS: TestMockAnonymityProvider_FailModes (0.00s)
 PASS
-ok  	github.com/jonybepary/decentralize-wikileaks/internal/ipfs	0.002s
+ok  	github.com/jonybepary/decentralize-wikileaks/internal/anonymity	0.014s
+=== RUN   TestLibp2pCrypto_GenerateKeyPair
+--- PASS: TestLibp2pCrypto_GenerateKeyPair (3.09s)
+=== RUN   TestLibp2pCrypto_KeySerializer_RoundTrip
+    libp2p_impl_test.go:95: Successfully failed decryption with wrong password (expected error): failed to decrypt key (incorrect password?)
+--- PASS: TestLibp2pCrypto_KeySerializer_RoundTrip (1.84s)
+PASS
+ok  	github.com/jonybepary/decentralize-wikileaks/internal/crypto	4.945s
+=== RUN   TestGenerateKeyPair
+--- PASS: TestGenerateKeyPair (0.01s)
+=== RUN   TestSaveLoadPrivateKey
+--- PASS: TestSaveLoadPrivateKey (2.19s)
+PASS
+ok  	github.com/jonybepary/decentralize-wikileaks/internal/identity	2.212s
+=== RUN   TestKuboIPFSInteractor_AddData
+Successfully connected to IPFS node 12D3KooWJ26C83b7Q7jyk7wyK882qGpefN2GwoXmZAnBwW8GrcBy at /ip4/127.0.0.1/tcp/5001
+    kubo_interactor_test.go:58: Successfully added data, CID: QmRe3zNg7QUJYrVpPxaSc6MpbhE7CcYdHdhg7ZRfQGhsBc
+KuboIPFSInteractor: Close() called (no-op for RPC client's underlying http client)
+--- PASS: TestKuboIPFSInteractor_AddData (0.04s)
+=== RUN   TestKuboIPFSInteractor_AddGetData_RoundTrip
+Successfully connected to IPFS node 12D3KooWJ26C83b7Q7jyk7wyK882qGpefN2GwoXmZAnBwW8GrcBy at /ip4/127.0.0.1/tcp/5001
+    kubo_interactor_test.go:90: RoundTrip added data, CID: QmYon435nHk5w12tfCbYJjcY6TPEmPdTfTSuwnKeNTQsDW
+    kubo_interactor_test.go:114: RoundTrip successfully verified retrieved data.
+KuboIPFSInteractor: Close() called (no-op for RPC client's underlying http client)
+--- PASS: TestKuboIPFSInteractor_AddGetData_RoundTrip (0.03s)
+PASS
+ok  	github.com/jonybepary/decentralize-wikileaks/internal/ipfs	0.098s
+=== RUN   TestCreateLibp2pHost
+Host created with ID: 12D3KooWQg1SVbUywFLo1afvsDPNAZSSmbNipsBZRz37e9YfqdE6 (using *anonymity.MockAnonymityProvider)
+Listening on addresses (reported by host after creation):
+Warning: Host reported no addresses after creation.
+    host_test.go:60: Host listening on addresses: []
+    host_test.go:71: Host reported no listening addresses.
+--- PASS: TestCreateLibp2pHost (0.01s)
+PASS
+ok  	github.com/jonybepary/decentralize-wikileaks/internal/network	0.020s

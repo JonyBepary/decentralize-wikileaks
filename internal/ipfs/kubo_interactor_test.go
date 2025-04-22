@@ -1,7 +1,9 @@
 package ipfs
 
 import (
+	"bytes"
 	"context"
+	"io"
 	"strings"
 	"testing"
 	"time"
@@ -20,25 +22,14 @@ func TestKuboIPFSInteractor_AddData(t *testing.T) {
 	// Skip test if Kubo isn't running? For now, assume it is.
 	// A helper function could ping the API endpoint first.
 
-	// TODO: Instantiate the KuboIPFSInteractor (needs implementation first)
-	// Example (will fail until KuboIPFSInteractor is defined):
-	/*
-		interactor, err := NewKuboIPFSInteractor(defaultKuboAPIMaddr)
-		if err != nil {
-			t.Fatalf("Failed to create KuboIPFSInteractor: %v", err)
-		}
-		defer interactor.Close()
-	*/
-	// --- Placeholder until implemented ---
-	t.Logf("Placeholder: KuboIPFSInteractor not yet implemented.")
-	var interactor IPFSInteractor // Use the interface type
-	// --- End Placeholder ---
-
-	// If interactor is nil (because it's not implemented), skip the actual test logic
-	if interactor == nil {
-		t.Skip("Skipping AddData test as KuboIPFSInteractor implementation is pending.")
-		return
+	// Instantiate the KuboIPFSInteractor
+	interactor, err := NewKuboIPFSInteractor(defaultKuboAPIMaddr)
+	if err != nil {
+		// Skip the test if we cannot create the interactor (likely daemon issue), log the exact error.
+		t.Skipf("Skipping test: Failed to create KuboIPFSInteractor (daemon running?). Error: %v", err)
+		// No need for Fatalf here, Skipf stops the test.
 	}
+	defer interactor.Close() // Ensure Close is called
 
 	// Prepare sample data
 	testData := "Hello IPFS via Kubo!"
@@ -67,6 +58,61 @@ func TestKuboIPFSInteractor_AddData(t *testing.T) {
 	t.Logf("Successfully added data, CID: %s", cid)
 
 	// TODO: Add a subsequent GetData test to verify the content matches
+}
+
+// TestKuboIPFSInteractor_AddGetData_RoundTrip tests adding and then getting data.
+// Requires a running Kubo daemon.
+func TestKuboIPFSInteractor_AddGetData_RoundTrip(t *testing.T) {
+	// Instantiate the KuboIPFSInteractor
+	interactor, err := NewKuboIPFSInteractor(defaultKuboAPIMaddr)
+	if err != nil {
+		t.Skipf("Skipping test: Failed to create KuboIPFSInteractor (daemon running?). Error: %v", err)
+	}
+	defer interactor.Close()
+
+	// Prepare sample data
+	testData := "This is the data for the round trip test!"
+	reader := strings.NewReader(testData)
+	expectedBytes := []byte(testData) // Store expected bytes
+
+	// Set a timeout for the context
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second) // Slightly longer for add + get
+	defer cancel()
+
+	// 1. Add Data
+	cid, err := interactor.AddData(ctx, reader)
+	if err != nil {
+		t.Fatalf("RoundTrip AddData failed unexpectedly: %v", err)
+	}
+	if cid == "" {
+		t.Fatal("RoundTrip AddData returned an empty CID")
+	}
+	t.Logf("RoundTrip added data, CID: %s", cid)
+
+	// --- This is where the test will fail initially ---
+
+	// 2. Get Data
+	retrievedReader, err := interactor.GetData(ctx, cid)
+	if err != nil {
+		// Expecting "GetData not yet implemented" error initially
+		t.Fatalf("RoundTrip GetData failed unexpectedly: %v", err)
+	}
+	if retrievedReader == nil {
+		t.Fatal("RoundTrip GetData returned a nil reader")
+	}
+	defer retrievedReader.Close() // Ensure the reader is closed
+
+	// 3. Verify Content
+	retrievedBytes, err := io.ReadAll(retrievedReader)
+	if err != nil {
+		t.Fatalf("RoundTrip failed to read retrieved data: %v", err)
+	}
+
+	if !bytes.Equal(expectedBytes, retrievedBytes) {
+		t.Errorf("RoundTrip retrieved data does not match original data.\nExpected: %s\nGot:      %s", string(expectedBytes), string(retrievedBytes))
+	} else {
+		t.Logf("RoundTrip successfully verified retrieved data.")
+	}
 }
 
 // TODO: Add TestKuboIPFSInteractor_GetData
